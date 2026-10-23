@@ -1,0 +1,111 @@
+# =====================================================================
+# FREEZE. — free Eevee rendering on GitHub Actions (public repo).
+# Dispatch manually (Actions tab -> "FREEZE render" -> Run workflow).
+# The scene .zip is fetched at runtime from scene_zip_url (a public
+# Google Drive direct-download link) — scene files are NEVER committed
+# to this repo. Each matrix job renders one small frame chunk and
+# uploads it as its own artifact (frames-<start>-<end>) so total
+# artifact storage stays manageable; download + delete artifacts
+# promptly after each run (Free plan = 500 MB Actions storage).
+# Full operator instructions: RUNBOOK.md
+# =====================================================================
+name: FREEZE render
+
+on:
+  workflow_dispatch:
+    inputs:
+      scene_zip_url:
+        description: "Direct-download URL of the packed scene .zip"
+        required: true
+        type: string
+      frame_start:
+        description: "First frame of the whole range"
+        required: true
+        type: string
+        default: "1"
+      frame_end:
+        description: "Last frame of the whole range"
+        required: true
+        type: string
+        default: "240"
+      chunk_size:
+        description: "Frames per job (matrix chunk)"
+        required: false
+        type: string
+        default: "10"
+      blend_path:
+        description: "Path of the .blend inside the zip (blank = auto-detect)"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      chunks: ${{ steps.plan.outputs.chunks }}
+    steps:
+      - id: plan
+        env:
+          FS: ${{ inputs.frame_start }}
+          FE: ${{ inputs.frame_end }}
+          CS: ${{ inputs.chunk_size }}
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, os
+          s, e, c = int(os.environ["FS"]), int(os.environ["FE"]), int(os.environ["CS"])
+          chunks = [{"start": i, "end": min(i + c - 1, e)} for i in range(s, e + 1, c)]
+          print("chunks=" + json.dumps(chunks))
+          print("plan:", chunks)
+          EOF
+
+  render:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.chunks) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Mesa / EGL libraries (software GL for Eevee)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libegl1 libegl-mesa0 libgl1 libglx-mesa0 libgl1-mesa-dri \
+            libxi6 libxrender1 libxkbcommon0 unzip xz-utils curl
+
+      - name: Cache Blender 3.6.10
+        id: blender-cache
+        uses: actions/cache@v4
+        with:
+          path: blender-3.6.10-linux-x64
+          key: blender-3.6.10-linux-x64
+
+      - name: Download Blender 3.6.10
+        if: steps.blender-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -L --fail -o blender.tar.xz \
+            https://download.blender.org/release/Blender3.6/blender-3.6.10-linux-x64.tar.xz
+          tar -xJf blender.tar.xz
+          rm blender.tar.xz
+
+      - name: Render chunk ${{ matrix.start }}-${{ matrix.end }}
+        env:
+          SCENE_ZIP_URL: ${{ inputs.scene_zip_url }}
+          FRAME_START: ${{ matrix.start }}
+          FRAME_END: ${{ matrix.end }}
+          BLEND_PATH: ${{ inputs.blend_path }}
+          BLENDER_BIN: ${{ github.workspace }}/blender-3.6.10-linux-x64/blender
+          OUT_DIR: ${{ github.workspace }}/out
+        run: bash render_chunk.sh
+
+      - name: Upload chunk frames
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-${{ matrix.start }}-${{ matrix.end }}
+          path: out/frame_*.png
+          if-no-files-found: error
+          retention-days: 3
