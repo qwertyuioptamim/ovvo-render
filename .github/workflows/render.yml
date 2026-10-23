@@ -51,12 +51,13 @@ jobs:
           FE: ${{ inputs.frame_end }}
           CS: ${{ inputs.chunk_size }}
         run: |
-          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
-          import json, os
+          python3 - <<'EOF'
+          import json, os, sys
           s, e, c = int(os.environ["FS"]), int(os.environ["FE"]), int(os.environ["CS"])
           chunks = [{"start": i, "end": min(i + c - 1, e)} for i in range(s, e + 1, c)]
-          print("chunks=" + json.dumps(chunks))
-          print("plan:", chunks)
+          print("plan:", chunks, file=sys.stderr)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("chunks=" + json.dumps(chunks) + "\n")
           EOF
 
   render:
